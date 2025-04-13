@@ -1,0 +1,137 @@
+---
+- name: Playbook to create users for mysql, postgres, and docdb (mongodb)
+  hosts: all
+  tasks:
+    - name: generate password for target user
+      ansible.builtin.set_fact:
+        target_user_pass: "{{ lookup('community.general.random_string', special=false, numbers=true, length=20) }}"
+      no_log: true
+
+    - name: create read only user (mysql)
+      community.mysql.mysql_user:
+        login_host: "{{ db_host }}"
+        login_user: "{{ db_username }}"
+        login_password: "{{ db_password }}"
+        name: "{{ target_username }}"
+        host: "{{ item.host }}"
+        password: "{{ target_user_pass }}"
+        priv: 
+          '{{ database }}.*: USAGE/{{ database }}.*: SELECT, SHOW VIEW'
+      with_items:
+        - { host: "10.10.%" }
+        - { host: "192.168.%" }
+      when:
+        - db_type == "mysql"
+        - grant_type == "readonly"
+
+    - name: create readwrite user (mysql)
+      community.mysql.mysql_user:
+        login_host: "{{ db_host }}"
+        login_user: "{{ db_username  }}"
+        login_password: "{{ db_password }}"
+        name: "{{ target_username }}"
+        host: "{{ item.host }}"
+        password: "{{ target_user_pass }}"
+        priv: 
+          '{{ database }}.*: USAGE/{{ database }}.*: SELECT, INSERT, UPDATE, DELETE, CREATE TEMPORARY TABLES, LOCK TABLES, EXECUTE, SHOW VIEW'
+      with_items:
+        - { host: "10.10.%" }
+        - { host: "192.168.%" }
+      when:
+        - db_type == "mysql"
+        - grant_type == "readwrite"
+
+    - name: create readonly user (postgres)
+      community.postgresql.postgresql_user:
+        login_host: "{{ db_host }}"
+        login_user: "{{ db_username }}"
+        login_password: "{{ db_password }}"
+        db: "{{ database }}"
+        name: "{{ target_username }}"
+        password: "{{ target_user_pass }}"
+      when:
+        - db_type == "postgres"
+        - grant_type == "readonly"
+
+    - name: create readwrite user (postgres)
+      community.postgresql.postgresql_user:
+        login_host: "{{ db_host }}"
+        login_user: "{{ db_username }}"
+        login_password: "{{ db_password }}"
+        db: "{{ database }}"
+        name: "{{ target_username }}"
+        password: "{{ target_user_pass }}"
+      when:
+        - db_type == "postgres"
+        - grant_type == "readwrite"
+
+    - name: grants for RO postgres user
+      community.postgresql.postgresql_membership:
+        login_host: "{{ db_host }}"
+        login_user: "{{ db_username }}"
+        login_password: "{{ db_password }}"
+        db: "{{ database }}"
+        group: readonly
+        target_role: "{{ target_username }}"
+      when:
+        - db_type == "postgres"
+        - grant_type == "readonly"
+
+    - name: grants for RW postgres user
+      community.postgresql.postgresql_membership:
+        login_host: "{{ db_host }}"
+        login_user: "{{ db_username }}"
+        login_password: "{{ db_password }}"
+        db: "{{ database }}"
+        group: readwrite
+        target_role: "{{ target_username }}"
+      when:
+        - db_type == "postgres"
+        - grant_type == "readwrite"
+
+    - name: Create read only user for AWS DocumentDB # works for mongoDB as well
+      community.mongodb.mongodb_user:
+        login_host: "{{ db_host }}"
+        login_user: "{{ db_username }}"
+        login_password: "{{ db_password }}"
+        login_port: 27017
+        login_database: "admin"
+        ssl: true
+        ssl_ca_certs: /path/to/your/cert
+        database: "{{ database}}"
+        name: "{{ target_username }}"
+        password: "{{ target_user_pass}}"
+        roles: read
+      when:
+        - db_type == "docdb"
+        - grant_type == "readonly"
+
+    - name: Create readWrite user for AWS DocumentDB
+      community.mongodb.mongodb_user:
+        login_host: "{{ db_host }}"
+        login_user: "{{ db_username }}"
+        login_password: "{{ db_password }}"
+        login_port: 27017
+        login_database: "admin"
+        ssl: true
+        ssl_ca_certs: /path/to/your/cert
+        database: "{{ database }}"
+        name: "{{ target_username }}"
+        password: "{{ target_user_pass}}"
+        roles: readWrite
+      when:
+        - db_type == "docdb"
+        - grant_type == "readwrite"
+
+    - name: send email with credentials
+      community.general.mail:
+        host: your.smtp.server
+        port: 25
+        to: "{{ email }}"
+        from: service@randoneering.tech
+        subject: 'Credentials for requested DB Access {{ ticket }}'
+        body: |
+          credentials for {{ ticket }}
+          user: {{ target_username }}
+          password: {{ target_user_pass }}
+          host: {{ db_host }}

@@ -1,0 +1,228 @@
+---
+- name: Drop all tempusers
+  hosts: all
+  tasks: 
+    - name: Connect to account
+      amazon.aws.sts_assume_role:
+        region: us-east-1
+        role_arn: "arn:aws:iam::account:role/ansible_management"
+        role_session_name: "drop_temp_user"
+      register: assumed_role_account
+
+    - name: Get account rds instance details
+      amazon.aws.rds_instance_info:
+        region: us-east-1
+        access_key: "{{ assumed_role_account.sts_creds.access_key }}"
+        secret_key: "{{ assumed_role_account.sts_creds.secret_key }}"
+        session_token: "{{ assumed_role_account.sts_creds.session_token }}"
+      register: account_instance
+
+    - name: Filter out engines
+      ansible.builtin.set_fact:
+        account_postgres_instances: "{{ account_instance.instances | selectattr('engine', 'search', 'postgres') }}"
+        account_mysql_instances: "{{ account_instance.instances | selectattr('engine', 'search', 'mysql') }}"
+
+    - name: Filter out stopped instances
+      ansible.builtin.set_fact: 
+        mysql_instances_avail: "{{ account_mysql_instances | selectattr('db_instance_status', 'eq', 'available') }}"
+        postgres_instances_avail: "{{ account_postgres_instances | selectattr('db_instance_status', 'eq', 'available') }}"
+    
+    - name: Get account rds cluster details
+      amazon.aws.rds_cluster_info:
+        region: us-east-1
+        access_key: "{{ assumed_role_account.sts_creds.access_key }}"
+        secret_key: "{{ assumed_role_account.sts_creds.secret_key }}"
+        session_token: "{{ assumed_role_account.sts_creds.session_token }}"
+      register: account_cluster
+
+    - name: Filter out engines
+      ansible.builtin.set_fact:
+        account_postgres_clusters: "{{ account_cluster.clusters | selectattr('engine', 'search', 'aurora-postgres') }}"
+        account_mysql_clusters: "{{ account_cluster.clusters | selectattr('engine', 'search', 'aurora-mysql') }}"
+        account_docdb_clusters: "{{ account_cluster.clusters | selectattr('engine', 'search', 'docdb') }}"
+
+    - name: Filter out stopped clusters
+      ansible.builtin.set_fact: 
+        mysql_clusters_avail: "{{ account_mysql_clusters | selectattr('status', 'eq', 'available') }}"
+        postgres_clusters_avail: "{{ account_postgres_clusters | selectattr('status', 'eq', 'available') }}"
+        docdb_clusters_avail: "{{ account_docdb_clusters | selectattr('status', 'eq', 'available') }}"
+
+    - name: Create list of endpoints for instances and clusters by engine
+      ansible.builtin.set_fact:
+        account_mysql_instance_list: "{{ mysql_instances_avail | selectattr('db_cluster_identifier', 'undefined') | map(attribute='endpoint.address') | list }}"
+        account_mysql_cluster_list: "{{ mysql_clusters_avail | map(attribute='endpoint') | list }}"
+        account_postgres_instance_list: "{{ postgres_instances_avail | selectattr('db_cluster_identifier', 'undefined') | map(attribute='endpoint.address') | list }}"
+        account_postgres_cluster_list: "{{ postgres_clusters_avail | map(attribute='endpoint') | list }}"
+        account_docdb_cluster_list: "{{ docdb_clusters_avail | map(attribute='endpoint') | list }}"
+
+    - name: Drop tempuser for postgres instances
+      community.postgresql.postgresql_query:
+        login_host: "{{ item }}"
+        login_user: "{{ db_username }}"
+        login_password: "{{ db_password }}"
+        db: postgres
+        query: 
+          - CREATE OR REPLACE FUNCTION drop_tempuser()
+            RETURNS TEXT AS $$
+            DECLARE
+              user_count INTEGER;
+              user_list TEXT;
+              v_user  RECORD;
+            BEGIN
+              user_count := (SELECT COUNT(*) FROM pg_user WHERE usename LIKE 'tempuser%');
+              IF user_count > 0 THEN
+              user_list := string_agg(usename::text, ',') FROM (SELECT DISTINCT usename FROM pg_user WHERE usename LIKE 'tempuser%') AS u;
+              FOR v_user IN SELECT * FROM unnest(string_to_array(user_list, ',')) AS x(username) 
+              LOOP
+                EXECUTE 'DROP USER "' || v_user.username || '";';
+              END LOOP;
+              ELSE
+              RETURN 'No Tempusers Found';
+              END IF;
+              RETURN 'All Tempusers Dropped';
+            END; $$
+            LANGUAGE plpgsql;
+          - SELECT drop_tempuser();
+      with_items: "{{ account_postgres_instance_list }}"
+      when: account_postgres_instance_list is defined
+      register: postgres_instance_results
+      ignore_errors: true
+
+    - name: Drop tempuser for postgres cluster
+      community.postgresql.postgresql_query:
+        login_host: "{{ item }}"
+        login_user: "{{ db_username }}"
+        login_password: "{{ db_password }}"
+        db: postgres
+        query: 
+          - CREATE OR REPLACE FUNCTION drop_tempuser()
+            RETURNS TEXT AS $$
+            DECLARE
+              user_count INTEGER;
+              user_list TEXT;
+              v_user  RECORD;
+            BEGIN
+              user_count := (SELECT COUNT(*) FROM pg_user WHERE usename LIKE 'tempuser%');
+              IF user_count > 0 THEN
+              user_list := string_agg(usename::text, ',') FROM (SELECT DISTINCT usename FROM pg_user WHERE usename LIKE 'tempuser%') AS u;
+              FOR v_user IN SELECT * FROM unnest(string_to_array(user_list, ',')) AS x(username) 
+              LOOP
+                EXECUTE 'DROP USER "' || v_user.username || '";';
+              END LOOP;
+              ELSE
+              RETURN 'No Tempusers Found';
+              END IF;
+              RETURN 'All Tempusers Dropped';
+            END; $$
+            LANGUAGE plpgsql;
+          - SELECT drop_tempuser();
+      with_items: "{{ account_postgres_cluster_list }}"
+      when: account_postgres_cluster_list is defined
+      register: postgres_cluster_results
+      ignore_errors: true
+
+    - name: Drop tempuser for mysql instances
+      community.mysql.mysql_query:
+        login_host: "{{ item }}"
+        login_user: "{{ db_username }}"
+        login_password: "{{ db_password }}"
+        query:
+          - DROP USER IF EXISTS tempuser_rw@'%'
+          - DROP USER IF EXISTS tempuser1_rw@'%'
+          - DROP USER IF EXISTS tempuser2_rw@'%'
+          - DROP USER IF EXISTS tempuser3_rw@'%'
+          - DROP USER IF EXISTS tempuser_rw@'172.%'
+          - DROP USER IF EXISTS tempuser_rw@'10.%'
+          - DROP USER IF EXISTS tempuser1_rw@'172.%'
+          - DROP USER IF EXISTS tempuser1_rw@'10.%'
+          - DROP USER IF EXISTS tempuser2_rw@'172.%'
+          - DROP USER IF EXISTS tempuser2_rw@'10.%'
+          - DROP USER IF EXISTS tempuser3_rw@'172.%'
+          - DROP USER IF EXISTS tempuser3_rw@'10.%'
+          - DROP USER IF EXISTS tempuser4_rw@'172.%'
+          - DROP USER IF EXISTS tempuser4_rw@'10.%'
+          - DROP USER IF EXISTS tempuser5_rw@'172.%'
+          - DROP USER IF EXISTS tempuser5_rw@'10.%'
+          - DROP USER IF EXISTS tempuser6_rw@'172.%'
+          - DROP USER IF EXISTS tempuser6_rw@'10.%'
+          - DROP USER IF EXISTS tempuser7_rw@'172.%'
+          - DROP USER IF EXISTS tempuser7_rw@'10.%'
+          - DROP USER IF EXISTS tempuser8_rw@'172.%'
+          - DROP USER IF EXISTS tempuser8_rw@'10.%'
+          - DROP USER IF EXISTS tempuser9_rw@'172.%'
+          - DROP USER IF EXISTS tempuser9_rw@'10.%'
+          - DROP USER IF EXISTS tempuser10_rw@'172.%'
+          - DROP USER IF EXISTS tempuser10_rw@'10.%'
+      with_items: "{{ account_mysql_instance_list }}"
+      when: account_mysql_instance_list is defined
+      register: mysql_instance_results
+      ignore_errors: true
+
+    - name: Drop tempuser for mysql cluster
+      community.mysql.mysql_query:
+        login_host: "{{ item }}"
+        login_user: "{{ db_username }}"
+        login_password: "{{ db_password }}"
+        query: 
+          - DROP USER IF EXISTS tempuser_rw@'%'
+          - DROP USER IF EXISTS tempuser1_rw@'%'
+          - DROP USER IF EXISTS tempuser2_rw@'%'
+          - DROP USER IF EXISTS tempuser3_rw@'%'
+          - DROP USER IF EXISTS tempuser_rw@'172.%'
+          - DROP USER IF EXISTS tempuser_rw@'10.%'
+          - DROP USER IF EXISTS tempuser1_rw@'172.%'
+          - DROP USER IF EXISTS tempuser1_rw@'10.%'
+          - DROP USER IF EXISTS tempuser2_rw@'172.%'
+          - DROP USER IF EXISTS tempuser2_rw@'10.%'
+          - DROP USER IF EXISTS tempuser3_rw@'172.%'
+          - DROP USER IF EXISTS tempuser3_rw@'10.%'
+          - DROP USER IF EXISTS tempuser4_rw@'172.%'
+          - DROP USER IF EXISTS tempuser4_rw@'10.%'
+          - DROP USER IF EXISTS tempuser5_rw@'172.%'
+          - DROP USER IF EXISTS tempuser5_rw@'10.%'
+          - DROP USER IF EXISTS tempuser6_rw@'172.%'
+          - DROP USER IF EXISTS tempuser6_rw@'10.%'
+          - DROP USER IF EXISTS tempuser7_rw@'172.%'
+          - DROP USER IF EXISTS tempuser7_rw@'10.%'
+          - DROP USER IF EXISTS tempuser8_rw@'172.%'
+          - DROP USER IF EXISTS tempuser8_rw@'10.%'
+          - DROP USER IF EXISTS tempuser9_rw@'172.%'
+          - DROP USER IF EXISTS tempuser9_rw@'10.%'
+          - DROP USER IF EXISTS tempuser10_rw@'172.%'
+          - DROP USER IF EXISTS tempuser10_rw@'10.%'
+      with_items: "{{ account_mysql_cluster_list }}"
+      when: account_mysql_cluster_list is defined
+      register: mysql_cluster_results
+      ignore_errors: true
+      
+    - name: Drop tempusers at AWS DocumentDB endpoint/cluster
+      community.mongodb.mongodb_shell:
+        login_host: "{{ item }}"
+        login_user: "{{ db_username }}"
+        login_password: "{{ db_password }}"
+        login_port: 27017
+        ssl: true
+        ssl_ca_certs: /path/to/your/cert
+        stringify: false
+        eval: |
+          function dropTempUser(tempuserName) {
+            if (db.getUser(tempuserName) != null) {
+              db.dropUser(tempuserName);
+              return(tempuserName);
+            }
+          };
+          dropTempUser('tempuser_rw');
+          dropTempUser('tempuser_rw1');
+          dropTempUser('tempuser_rw2');
+          dropTempUser('tempuser_rw3');
+          dropTempUser('tempuser_rw4');
+          dropTempUser('tempuser_rw5');
+          dropTempUser('tempuser_rw6');
+          dropTempUser('tempuser_rw7');
+          dropTempUser('tempuser_rw8');
+          dropTempUser('tempuser_rw9');
+          dropTempUser('tempuser_rw10');
+      with_items: "{{ account_docdb_cluster_list }}"
+      when: account_docdb_cluster_list is defined
+      register: docdb_tempusers_to_drop
+      ignore_errors: true
