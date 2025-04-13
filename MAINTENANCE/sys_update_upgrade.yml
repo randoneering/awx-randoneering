@@ -1,0 +1,13 @@
+---
+- hosts: prod
+  tasks:
+    - name: update and upgrade apt packages
+      apt:
+        update_cache: yes
+        upgrade: 'yes'
+    
+    - name: reboot after update
+      ansible.builtin.reboot:
+        msg: "Rebooting for maintenance playbook"
+    
+  
