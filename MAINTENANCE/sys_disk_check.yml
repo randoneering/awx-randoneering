@@ -1,6 +1,7 @@
 ---
 - hosts: all
   tasks:
+    
     - name: Check disk space available
       ansible.builtin.shell:
         cmd: |
@@ -12,4 +13,9 @@
       register: disk_usage
     
     - name: 85% Utilization Check
+      community.general.discord:
+        webhook_id: "{{ webhook_id }}"
+        webhook_token: "{{ webhook_token }}"
+        content: "Disk usage for {{ host }} is {{ disk_usage }}"
+
       
