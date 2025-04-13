@@ -1,5 +1,5 @@
 ---
-- hosts: prod
+- hosts: db01
   tasks:
     - name: update and upgrade apt packages
       apt:
