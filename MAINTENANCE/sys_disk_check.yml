@@ -10,3 +10,9 @@
       changed_when: false
       check_mode: false
       register: disk_usage
+
+    - name: Ping Discord Server Status
+      community.general.discord:
+        webhook_id: "{{ WEBHOOK_ID }}"
+        webhook_token: "{{ WEBHOOK_TOKEN }}"
+        content: "{{ disk_usage }} for {{ host }}"
